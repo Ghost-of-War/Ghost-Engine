@@ -1,4 +1,6 @@
 #include "VulkanRenderer.h"
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "../../vendor/tinyobjloader/tiny_obj_loader.h"
 #include <SDL3/SDL_vulkan.h>
 #include <cstring>
 #include <set>
@@ -12,6 +14,10 @@ VulkanRenderer::~VulkanRenderer() {
 }
 
 bool VulkanRenderer::init() {
+
+    m_meshes.reserve(100);
+
+
     if (!createInstance()) return false;
     if (!createSurface()) return false;
     if (!pickPhysicalDevice()) return false;
@@ -20,16 +26,52 @@ bool VulkanRenderer::init() {
     createSwapChain();
     createImageViews();
     createRenderPass();
+    
     createDescriptorSetLayout(); 
     createGraphicsPipeline();
     
     createCommandPool();
-    
     createDepthResources(); 
-    
     createFramebuffers();
+    
     updateVerticesFromCorners();
-    createVertexBuffer();
+
+    Mesh cubeMesh;
+    VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+    
+    createBuffer(bufferSize, 
+                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+                 cubeMesh.vertexBuffer, 
+                 cubeMesh.vertexBufferMemory);
+    
+    void* data;
+    vkMapMemory(m_device, cubeMesh.vertexBufferMemory, 0, bufferSize, 0, &data);
+    memcpy(data, vertices.data(), (size_t) bufferSize);
+    
+    m_vertexBufferMapped = data; 
+    
+
+    cubeMesh.vertexCount = static_cast<uint32_t>(vertices.size());
+    
+    m_meshes.push_back(cubeMesh); 
+
+    GameObject obj1;
+    obj1.name = "Cube 1";
+    obj1.mesh = &m_meshes[0];
+    obj1.position = {0.0f, 0.0f, 0.0f};
+    obj1.rotation = {0.0f, 0.0f, 0.0f};
+    obj1.scale = {1.0f, 1.0f, 1.0f};
+    m_sceneObjects.push_back(obj1);
+
+    GameObject obj2;
+    obj2.name = "Cube 2";
+    obj2.mesh = &m_meshes[0];
+    obj2.position = {2.0f, 0.0f, 0.0f};
+    obj2.rotation = {0.0f, 45.0f, 0.0f};
+    obj2.scale = {0.5f, 0.5f, 0.5f};
+    m_sceneObjects.push_back(obj2);
+
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
@@ -38,6 +80,7 @@ bool VulkanRenderer::init() {
     createSyncObjects();
     
     initImGui();
+    
     std::cout << "Vulkan initialized successfully!" << std::endl;
     return true;
 }
@@ -50,7 +93,6 @@ void VulkanRenderer::cleanup() {
         vkFreeMemory(m_device, m_uniformBuffersMemory[i], nullptr);
     }
 
-
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -60,8 +102,11 @@ void VulkanRenderer::cleanup() {
 
     vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
 
-    vkDestroyBuffer(m_device, m_vertexBuffer, nullptr);
-    vkFreeMemory(m_device, m_vertexBufferMemory, nullptr);
+    for (auto& mesh : m_meshes) {
+        vkDestroyBuffer(m_device, mesh.vertexBuffer, nullptr);
+        vkFreeMemory(m_device, mesh.vertexBufferMemory, nullptr);
+    }
+    m_meshes.clear();
 
     vkDestroySemaphore(m_device, m_renderFinishedSemaphore, nullptr);
     vkDestroySemaphore(m_device, m_imageAvailableSemaphore, nullptr);
@@ -590,10 +635,18 @@ void VulkanRenderer::createGraphicsPipeline() {
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
 
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(glm::mat4);
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
+    
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
     
     if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create pipeline layout!");
@@ -740,13 +793,28 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
         scissor.extent = m_swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        VkBuffer vertexBuffers[] = {m_vertexBuffer};
-        VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-        
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSets[imageIndex], 0, nullptr);
 
-        vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
+        if (!m_sceneObjects.empty()) { 
+            for (auto& obj : m_sceneObjects) {
+                glm::mat4 modelMatrix = obj.getTransformMatrix();
+                
+                vkCmdPushConstants(
+                    commandBuffer, 
+                    m_pipelineLayout, 
+                    VK_SHADER_STAGE_VERTEX_BIT, 
+                    0, 
+                    sizeof(glm::mat4), 
+                    &modelMatrix
+                );
+
+                VkBuffer vertexBuffers[] = { obj.mesh->vertexBuffer };
+                VkDeviceSize offsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
+                vkCmdDraw(commandBuffer, obj.mesh->vertexCount, 1, 0, 0);
+            }
+        }
 
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
@@ -764,6 +832,16 @@ void VulkanRenderer::drawFrame() {
     m_lastFrame = currentFrame;
 
     processInput();
+
+    if (m_autoRotate && !m_sceneObjects.empty()) {
+        m_sceneObjects[0].rotation.z += 90.0f * m_deltaTime;
+        
+        if (m_sceneObjects[0].rotation.z > 360.0f) m_sceneObjects[0].rotation.z -= 360.0f;
+
+        if (m_sceneObjects.size() > 1) {
+             m_sceneObjects[1].rotation.y += 45.0f * m_deltaTime;
+        }
+    }
 
     vkWaitForFences(m_device, 1, &m_inFlightFence, VK_TRUE, UINT64_MAX);
 
@@ -798,19 +876,50 @@ void VulkanRenderer::drawFrame() {
 
     ImGui::Separator();
 
-    ImGui::Checkbox("Auto Rotate Z", &m_autoRotate);
-    
-    ImGui::Text("Rotation");
-    ImGui::SliderFloat("X", &m_rotation.x, 0.0f, 360.0f);
-    ImGui::SliderFloat("Y", &m_rotation.y, 0.0f, 360.0f);
-    if (m_autoRotate) ImGui::BeginDisabled();
-        ImGui::SliderFloat("Z", &m_rotation.z, 0.0f, 360.0f);
-    if (m_autoRotate) ImGui::EndDisabled();
+    if (ImGui::Button("Load & Add Monkey")) {
+        try {
+            Mesh newMesh = loadMesh("assets/Monkey.obj"); 
+            
+            m_meshes.push_back(newMesh);
+
+            GameObject newObj;
+            newObj.name = "Suzanne " + std::to_string(m_sceneObjects.size());
+            
+            newObj.mesh = &m_meshes.back(); 
+            
+            newObj.position = {0.0f, 0.0f, 0.0f}; 
+            newObj.rotation = {0.0f, 0.0f, 0.0f};
+            newObj.scale = {1.0f, 1.0f, 1.0f}; 
+            
+            m_sceneObjects.push_back(newObj);
+            
+        } catch (const std::exception& e) {
+            std::cerr << "ERROR loading model: " << e.what() << std::endl;
+        }
+    }
 
     ImGui::Separator();
 
-    ImGui::Text("Camera Position");
-    ImGui::DragFloat3("XYZ", &m_cameraPos.x, 0.1f);
+    ImGui::Checkbox("Auto Rotate Z", &m_autoRotate);
+
+    ImGui::Separator();
+
+ImGui::Text("Scene Objects (%d)", static_cast<int>(m_sceneObjects.size()));
+
+for (int i = 0; i < m_sceneObjects.size(); i++) {
+    ImGui::PushID(i);
+    
+    if (ImGui::CollapsingHeader(m_sceneObjects[i].name.c_str())) {
+        
+        ImGui::DragFloat3("Position", &m_sceneObjects[i].position.x, 0.1f);
+        
+        ImGui::DragFloat3("Rotation", &m_sceneObjects[i].rotation.x, 1.0f);
+        
+        ImGui::DragFloat3("Scale", &m_sceneObjects[i].scale.x, 0.05f);
+    }
+    
+    ImGui::PopID();
+}
 
     ImGui::End();
 
@@ -869,7 +978,6 @@ void VulkanRenderer::waitIdle() {
     vkDeviceWaitIdle(m_device);
 }
 
-//Vertex
 void VulkanRenderer::createVertexBuffer() {
     VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
 
@@ -1041,27 +1149,12 @@ void VulkanRenderer::createDescriptorSets() {
 }
 
 void VulkanRenderer::updateUniformBuffer(uint32_t currentImage) {
-    static auto startTime = std::chrono::high_resolution_clock::now();
-    auto currentTime = std::chrono::high_resolution_clock::now();
-    float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-
     UniformBufferObject ubo{};
-    
-    glm::mat4 model = glm::mat4(1.0f);
-
-    if (m_autoRotate) {
-        m_rotation.z = fmod(time * 90.0f, 360.0f); 
-    }
-
-    model = glm::rotate(model, glm::radians(m_rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-    model = glm::rotate(model, glm::radians(m_rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-    model = glm::rotate(model, glm::radians(m_rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-    
-    ubo.model = model;
 
     ubo.view = glm::lookAt(m_cameraPos, m_cameraPos + m_cameraFront, m_cameraUp);
-    
+
     ubo.proj = glm::perspective(glm::radians(45.0f), m_swapChainExtent.width / (float) m_swapChainExtent.height, 0.1f, 100.0f);
+    
     ubo.proj[1][1] *= -1;
 
     memcpy(m_uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
@@ -1208,7 +1301,7 @@ void VulkanRenderer::initImGui() {
 
 void VulkanRenderer::processInput() {
     float cameraSpeed = 2.5f * m_deltaTime;
-    if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_LSHIFT]) cameraSpeed *= 2.0f;
+    if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_LSHIFT]) cameraSpeed *= 4.0f;
 
     const bool* keys = SDL_GetKeyboardState(nullptr);
     
@@ -1219,30 +1312,6 @@ void VulkanRenderer::processInput() {
     if (keys[SDL_SCANCODE_D]) velocity += glm::normalize(glm::cross(m_cameraFront, m_cameraUp));
     if (keys[SDL_SCANCODE_SPACE]) velocity += m_cameraUp;
     if (keys[SDL_SCANCODE_LCTRL]) velocity -= m_cameraUp;
-
-    if (glm::length(velocity) > 0.0f) {
-        velocity = glm::normalize(velocity) * cameraSpeed;
-        
-        glm::vec3 nextPos = m_cameraPos + velocity;
-
-        glm::mat4 modelMatrix = glm::mat4(1.0f);
-        modelMatrix = glm::rotate(modelMatrix, glm::radians(m_rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        modelMatrix = glm::rotate(modelMatrix, glm::radians(m_rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        modelMatrix = glm::rotate(modelMatrix, glm::radians(m_rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-
-        glm::mat4 inverseModel = glm::inverse(modelMatrix);
-        glm::vec4 localCameraPos4 = inverseModel * glm::vec4(nextPos, 1.0f);
-        glm::vec3 localCameraPos = glm::vec3(localCameraPos4);
-
-        glm::vec3 boundsMin, boundsMax;
-        calculateBounds(boundsMin, boundsMax);
-
-        if (!checkCollision(localCameraPos, boundsMin, boundsMax, 0.35f)) {
-            m_cameraPos = nextPos;
-        } else 
-        {
-        }
-    }
 
     float xrel, yrel;
     Uint32 mouseButtons = SDL_GetRelativeMouseState(&xrel, &yrel);
@@ -1256,6 +1325,31 @@ void VulkanRenderer::processInput() {
         front.y = sin(glm::radians(m_pitch));
         front.z = sin(glm::radians(m_yaw)) * cos(glm::radians(m_pitch));
         m_cameraFront = glm::normalize(front);
+    }
+
+    if (glm::length(velocity) > 0.0f) {
+        velocity = glm::normalize(velocity) * cameraSpeed;
+        glm::vec3 nextPos = m_cameraPos + velocity;
+        
+        bool collisionDetected = false;
+
+        for (const auto& obj : m_sceneObjects) {
+            glm::vec3 halfSize = 0.5f * obj.scale;
+            
+            glm::vec3 objMin = obj.position - halfSize;
+            glm::vec3 objMax = obj.position + halfSize;
+
+            float playerRadius = 0.2f; 
+            
+            if (checkCollisionAABB(nextPos, objMin, objMax, playerRadius)) {
+                collisionDetected = true;
+                break;
+            }
+        }
+
+        if (!collisionDetected) {
+            m_cameraPos = nextPos;
+        }
     }
 }
 
@@ -1296,4 +1390,68 @@ bool VulkanRenderer::checkCollision(const glm::vec3& point, const glm::vec3& min
     );
 
     return distance < radius;
+}
+
+Mesh VulkanRenderer::loadMesh(const std::string& filename) {
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn, err;
+
+    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename.c_str())) {
+        throw std::runtime_error(warn + err);
+    }
+
+    std::vector<Vertex> tempVertices;
+
+    for (const auto& shape : shapes) {
+        for (const auto& index : shape.mesh.indices) {
+            Vertex vertex{};
+
+            vertex.pos = {
+                attrib.vertices[3 * index.vertex_index + 0],
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]
+            };
+
+            if (index.normal_index >= 0) {
+                vertex.color = {
+                    attrib.normals[3 * index.normal_index + 0],
+                    attrib.normals[3 * index.normal_index + 1],
+                    attrib.normals[3 * index.normal_index + 2]
+                };
+                vertex.color = vertex.color * 0.5f + 0.5f; 
+            } else {
+                vertex.color = {1.0f, 1.0f, 1.0f};
+            }
+
+            tempVertices.push_back(vertex);
+        }
+    }
+
+    Mesh newMesh;
+    newMesh.vertexCount = static_cast<uint32_t>(tempVertices.size());
+    
+    VkDeviceSize bufferSize = sizeof(Vertex) * tempVertices.size();
+
+    createBuffer(bufferSize, 
+                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+                 newMesh.vertexBuffer, 
+                 newMesh.vertexBufferMemory);
+
+    void* data;
+    vkMapMemory(m_device, newMesh.vertexBufferMemory, 0, bufferSize, 0, &data);
+    memcpy(data, tempVertices.data(), (size_t) bufferSize);
+    vkUnmapMemory(m_device, newMesh.vertexBufferMemory);
+
+    return newMesh;
+}
+
+bool VulkanRenderer::checkCollisionAABB(const glm::vec3& point, const glm::vec3& boxMin, const glm::vec3& boxMax, float radius) {
+    bool overlapX = (point.x + radius > boxMin.x) && (point.x - radius < boxMax.x);
+    bool overlapY = (point.y + radius > boxMin.y) && (point.y - radius < boxMax.y);
+    bool overlapZ = (point.z + radius > boxMin.z) && (point.z - radius < boxMax.z);
+
+    return overlapX && overlapY && overlapZ;
 }

@@ -20,20 +20,19 @@ struct Vertex {
         return bindingDescription;
     }
 
-    // 2. Описание атрибутов: "Где лежит позиция, а где цвет внутри структуры"
     static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
         std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
 
         // Атрибут 0: Позиция (vec3)
         attributeDescriptions[0].binding = 0;
-        attributeDescriptions[0].location = 0; // layout(location = 0) в шейдере
-        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[0].offset = offsetof(Vertex, pos);
 
         // Атрибут 1: Цвет (vec3)
         attributeDescriptions[1].binding = 0;
-        attributeDescriptions[1].location = 1; // layout(location = 1) в шейдере
-        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[1].offset = offsetof(Vertex, color);
 
         return attributeDescriptions;
@@ -41,7 +40,6 @@ struct Vertex {
 };
 
 struct UniformBufferObject {
-    alignas(16) glm::mat4 model; // Вращение объекта
-    alignas(16) glm::mat4 view;  // Камера
-    alignas(16) glm::mat4 proj;  // Перспектива
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 proj;
 };

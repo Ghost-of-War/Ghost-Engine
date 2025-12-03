@@ -149,6 +149,7 @@ private:
     
     std::vector<GameObject> m_sceneObjects;
 
+    Mesh loadMesh(const std::string& filename);
 
     //Rotate
     glm::vec3 m_rotation = {0.0f, 0.0f, 0.0f};
@@ -239,6 +240,8 @@ private:
 
     void updateVerticesFromCorners();
 
+    bool checkCollisionAABB(const glm::vec3& point, const glm::vec3& boxMin, const glm::vec3& boxMax, float radius);
+
     //helpers
     bool isDeviceSuitable(VkPhysicalDevice device);
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);
@@ -259,4 +262,3 @@ private:
     bool checkCollision(const glm::vec3& point, const glm::vec3& min, const glm::vec3& max, float radius);
     void calculateBounds(glm::vec3& outMin, glm::vec3& outMax);
 };
-
